@@ -6,22 +6,29 @@ import time
 from pathlib import Path
 from git import Repo
 import pandas as pd
-
+import stat
 
 class RepositoryAnalyzer:
-    def __init__(self, repos_csv_file="top_1000_java_repos_metrics.csv",
+    def __init__(self,
+                 repos_csv_file="top_1000_java_repos_metrics.csv",
                  clone_dir="repositories",
                  ck_jar_path=r"C:\Users\gabri\Downloads\ck-ck-0.7.0\ck-ck-0.7.0\target\ck-0.7.0-jar-with-dependencies.jar"):
         self.repos_csv_file = repos_csv_file
         self.clone_dir = Path(clone_dir)
         self.clone_dir.mkdir(exist_ok=True)
         self.results = []
+
         self.ck_jar_path = Path(ck_jar_path)
+
+    def handle_remove_readonly(self, func, path, exc_info):
+        """Força a remoção de arquivos somente leitura no Windows"""
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
 
     def load_repositories(self):
         """Carrega a lista de repositórios do arquivo CSV"""
         if not os.path.exists(self.repos_csv_file):
-            print(f"Arquivo {self.repos_csv_file} não encontrado. Execute primeiro o collect_repositories.py")
+            print(f"Arquivo {self.repos_csv_file} não encontrado.")
             return []
 
         repos = []
@@ -33,20 +40,12 @@ class RepositoryAnalyzer:
         print(f"Carregados {len(repos)} repositórios do arquivo CSV")
         return repos
 
-    
     def clone_repository(self, repo_url, repo_name):
         """Clona um repositório específico"""
-        import stat
-
-        def handle_remove_readonly(func, path, exc_info):
-            """Força a remoção de arquivos somente leitura no Windows"""
-            os.chmod(path, stat.S_IWRITE)
-            func(path)
-
         repo_path = self.clone_dir / repo_name
 
         if repo_path.exists():
-            shutil.rmtree(repo_path, onerror=handle_remove_readonly)
+            shutil.rmtree(repo_path, onerror=self.handle_remove_readonly)
 
         try:
             print(f"Clonando {repo_name}...")
@@ -65,6 +64,7 @@ class RepositoryAnalyzer:
         else:
             print(f"✗ ck.jar não encontrado em {self.ck_jar_path}")
             return False
+
     def analyze_repository_with_ck(self, repo_path):
         """Analisa um repositório usando a ferramenta CK"""
         if not repo_path or not repo_path.exists():
@@ -73,23 +73,18 @@ class RepositoryAnalyzer:
         try:
             print(f"Analisando {repo_path.name} com CK...")
 
-            # Define saída CSV absoluta
             ck_output = repo_path / "ck_results.csv"
-
-            # Localiza a pasta src se existir, senão usa a raiz
             src_path = repo_path / "src"
             if not src_path.exists():
                 src_path = repo_path
 
-            # Executa CK apontando para o diretório
             result = subprocess.run(
                 ["java", "-jar", str(self.ck_jar_path),
-                str(src_path.resolve()), "true", "0", "false", str(ck_output.resolve())],
+                 str(src_path.resolve()), "true", "0", "false", str(ck_output.resolve())],
                 capture_output=True, text=True, timeout=600,
                 cwd=str(repo_path.resolve())
             )
 
-            # Se CSV não existir ou estiver vazio, salva stdout para inspeção
             if not ck_output.exists() or ck_output.stat().st_size == 0:
                 with open(ck_output, "w", encoding="utf-8") as f:
                     f.write(result.stdout)
@@ -105,7 +100,6 @@ class RepositoryAnalyzer:
             print(f"✗ Erro inesperado na análise CK para {repo_path.name}: {e}")
             return None
 
-        
     def parse_ck_results(self, repo_path):
         """Processa os resultados do CK e retorna métricas sumarizadas"""
         ck_file = repo_path / "ck_results.csv"
@@ -115,19 +109,16 @@ class RepositoryAnalyzer:
             return None
 
         try:
-            # Tenta ler normalmente como CSV
             try:
                 df = pd.read_csv(ck_file)
             except pd.errors.ParserError:
-                # Se CSV malformado, tenta parse manual
                 with open(ck_file, "r", encoding="utf-8") as f:
                     lines = f.readlines()
-                
+
                 data = []
                 for line in lines:
                     parts = line.strip().split(",")
-                    # Ajuste conforme as colunas reais do CK
-                    if len(parts) >= 5 and parts[1].isdigit():  
+                    if len(parts) >= 5 and parts[1].isdigit():
                         data.append({
                             "class": parts[0],
                             "cbo": int(parts[1]),
@@ -165,10 +156,8 @@ class RepositoryAnalyzer:
         except Exception as e:
             print(f"✗ Erro ao processar resultados CK para {repo_path.name}: {e}")
             return None
- 
 
     def analyze_single_repository(self, repo_info):
-        """Analisa um único repositório completo"""
         repo_name = repo_info["full_name"].replace("/", "_")
         repo_url = f"https://github.com/{repo_info['full_name']}.git"
 
@@ -184,35 +173,30 @@ class RepositoryAnalyzer:
 
         ck_metrics = self.analyze_repository_with_ck(repo_path)
         if not ck_metrics:
+            shutil.rmtree(repo_path, onerror=self.handle_remove_readonly)
             return None
 
-        combined_metrics = {
-            **repo_info,
-            **ck_metrics,
-        }
+        combined_metrics = {**repo_info, **ck_metrics}
 
-        # shutil.rmtree(repo_path)
-        # print(f"✓ Repositório {repo_name} removido após análise")
+        shutil.rmtree(repo_path, onerror=self.handle_remove_readonly)
+        print(f"✓ Repositório {repo_name} removido após análise")
 
         return combined_metrics
 
     def save_results(self, results, filename="repository_analysis_results.csv"):
-        """Salva os resultados da análise em CSV"""
         if not results:
             print("Nenhum resultado para salvar")
             return
 
         with open(filename, "w", newline="", encoding="utf-8") as file:
-            if results:
-                writer = csv.DictWriter(file, fieldnames=results[0].keys())
-                writer.writeheader()
-                writer.writerows(results)
+            writer = csv.DictWriter(file, fieldnames=results[0].keys())
+            writer.writeheader()
+            writer.writerows(results)
 
         print(f"✓ Resultados salvos em {filename}")
         print(f"Total de repositórios analisados: {len(results)}")
 
     def run_analysis(self, num_repos=1):
-        """Executa a análise completa"""
         print("=== Analisador de Repositórios Java com CK ===\n")
 
         if not self.install_ck_tool():
@@ -228,7 +212,6 @@ class RepositoryAnalyzer:
 
         for i, repo_info in enumerate(repos_to_analyze, 1):
             print(f"\n[{i}/{len(repos_to_analyze)}] Processando...")
-
             result = self.analyze_single_repository(repo_info)
             if result:
                 self.results.append(result)
@@ -247,7 +230,6 @@ class RepositoryAnalyzer:
             print("Nenhum repositório foi analisado com sucesso.")
 
     def print_summary(self):
-        """Imprime um resumo dos resultados"""
         if not self.results:
             return
 
@@ -275,13 +257,10 @@ class RepositoryAnalyzer:
         for i, repo in enumerate(sorted_repos[:3], 1):
             print(f"{i}. {repo['full_name']} - {repo['stars']} ⭐ (CBO: {repo['avg_cbo']:.2f})")
 
-
 def main():
     analyzer = RepositoryAnalyzer()
-
     print("Executando análise (1 repositório)...")
-    analyzer.run_analysis(num_repos=1)
-
+    analyzer.run_analysis(num_repos=3)
 
 if __name__ == "__main__":
     main()
