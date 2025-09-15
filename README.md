@@ -67,7 +67,7 @@ Analisar aspectos da qualidade de repositórios desenvolvidos na linguagem Java,
 python collect_repositories.py
 ```
 
-Este script irá:
+Este script tem como objetivo:
 
 - Buscar os 1000 repositórios Java mais populares
 - Salvar a lista em `top_1000_java_repos.csv`
@@ -106,5 +106,4 @@ Este script irá:
    - Contém informações básicas (estrelas, forks, tamanho, etc.)
 
 ## Exemplo de Resultados
-
 //todo: fix
