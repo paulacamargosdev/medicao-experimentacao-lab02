@@ -7,17 +7,21 @@ from pathlib import Path
 from git import Repo
 import pandas as pd
 import stat
+import concurrent.futures
+from datetime import datetime
+import threading
 
 class RepositoryAnalyzer:
     def __init__(self,
                  repos_csv_file="top_1000_java_repos_metrics.csv",
                  clone_dir="repositories",
-                 ck_jar_path=r"C:\Users\gabri\Downloads\ck-ck-0.7.0\ck-ck-0.7.0\target\ck-0.7.0-jar-with-dependencies.jar"):
+                 ck_jar_path=r"Z:\ws-PUC\lab-exp-med\ck\target\ck-0.7.1-SNAPSHOT-jar-with-dependencies.jar",
+                 results_file="repository_analysis_results.csv"):
         self.repos_csv_file = repos_csv_file
         self.clone_dir = Path(clone_dir)
         self.clone_dir.mkdir(exist_ok=True)
         self.results = []
-
+        self.results_file = results_file
         self.ck_jar_path = Path(ck_jar_path)
 
     def handle_remove_readonly(self, func, path, exc_info):
@@ -39,6 +43,29 @@ class RepositoryAnalyzer:
 
         print(f"Carregados {len(repos)} repositórios do arquivo CSV")
         return repos
+    
+    def get_remaining_repositories(self, num_repos=100):
+        """Retorna repositórios que ainda não foram analisados"""
+        all_repos = self.load_repositories()
+        
+        analyzed_repos = set()
+        if os.path.exists(self.results_file):
+            try:
+                with open(self.results_file, 'r', encoding='utf-8') as file:
+                    reader = csv.DictReader(file)
+                    analyzed_repos = {row['full_name'] for row in reader}
+                print(f"✅ {len(analyzed_repos)} repositórios já analisados")
+            except Exception as e:
+                print(f"⚠️ Erro ao carregar resultados existentes: {e}")
+        
+        remaining_repos = []
+        for repo in all_repos:
+            if repo['full_name'] not in analyzed_repos:
+                remaining_repos.append(repo)
+        
+        print(f"⏳ {len(remaining_repos)} repositórios restantes para analisar")
+        
+        return remaining_repos[:num_repos]
 
     def clone_repository(self, repo_url, repo_name):
         """Clona um repositório específico"""
@@ -49,7 +76,8 @@ class RepositoryAnalyzer:
 
         try:
             print(f"Clonando {repo_name}...")
-            Repo.clone_from(repo_url, repo_path, depth=1)
+
+            Repo.clone_from(repo_url, repo_path, depth=1, single_branch=True)
             print(f"✓ {repo_name} clonado com sucesso")
             return repo_path
         except Exception as e:
@@ -65,6 +93,27 @@ class RepositoryAnalyzer:
             print(f"✗ ck.jar não encontrado em {self.ck_jar_path}")
             return False
 
+    def _calculate_timeout(self, repo_path):
+        """Calcula timeout dinâmico baseado no tamanho do repositório"""
+        try:
+
+            java_files = list(repo_path.rglob("*.java"))
+            num_java_files = len(java_files)
+            
+
+            if num_java_files < 50:
+                return 60   
+            elif num_java_files < 200:
+                return 120  
+            elif num_java_files < 500:
+                return 300 
+            elif num_java_files < 1000:
+                return 600 
+            else:
+                return 900 
+        except:
+            return 180 
+
     def analyze_repository_with_ck(self, repo_path):
         """Analisa um repositório usando a ferramenta CK"""
         if not repo_path or not repo_path.exists():
@@ -74,27 +123,34 @@ class RepositoryAnalyzer:
             print(f"Analisando {repo_path.name} com CK...")
 
             ck_output = repo_path / "ck_results.csv"
+            ck_class_output = repo_path / "ck_results.csvclass.csv"
             src_path = repo_path / "src"
             if not src_path.exists():
                 src_path = repo_path
 
+
+            timeout = self._calculate_timeout(repo_path)
+            
             result = subprocess.run(
                 ["java", "-jar", str(self.ck_jar_path),
                  str(src_path.resolve()), "true", "0", "false", str(ck_output.resolve())],
-                capture_output=True, text=True, timeout=600,
+                capture_output=True, text=True, timeout=timeout,
                 cwd=str(repo_path.resolve())
             )
 
-            if not ck_output.exists() or ck_output.stat().st_size == 0:
+
+            if not ck_class_output.exists() or ck_class_output.stat().st_size == 0:
                 with open(ck_output, "w", encoding="utf-8") as f:
                     f.write(result.stdout)
                 print(f"⚠ CK não gerou CSV válido, mas salvamos stdout em {ck_output}")
+            else:
+                print(f"✓ CK gerou arquivo de métricas: {ck_class_output}")
 
             print(f"✓ Análise CK concluída para {repo_path.name}")
             return self.parse_ck_results(repo_path)
 
         except subprocess.TimeoutExpired:
-            print(f"✗ Timeout na análise CK para {repo_path.name}")
+            print(f"✗ Timeout na análise CK para {repo_path.name} (timeout: {timeout}s)")
             return None
         except Exception as e:
             print(f"✗ Erro inesperado na análise CK para {repo_path.name}: {e}")
@@ -102,7 +158,7 @@ class RepositoryAnalyzer:
 
     def parse_ck_results(self, repo_path):
         """Processa os resultados do CK e retorna métricas sumarizadas"""
-        ck_file = repo_path / "ck_results.csv"
+        ck_file = repo_path / "ck_results.csvclass.csv"
 
         if not ck_file.exists():
             print(f"Arquivo de resultados CK não encontrado: {ck_file}")
@@ -178,53 +234,144 @@ class RepositoryAnalyzer:
 
         combined_metrics = {**repo_info, **ck_metrics}
 
-        shutil.rmtree(repo_path, onerror=self.handle_remove_readonly)
-        print(f"✓ Repositório {repo_name} removido após análise")
+
+        def cleanup_repo():
+            try:
+                shutil.rmtree(repo_path, onerror=self.handle_remove_readonly)
+                print(f"✓ Repositório {repo_name} removido após análise")
+            except Exception as e:
+                print(f"⚠ Erro ao remover {repo_name}: {e}")
+        
+        cleanup_thread = threading.Thread(target=cleanup_repo)
+        cleanup_thread.daemon = True
+        cleanup_thread.start()
 
         return combined_metrics
 
-    def save_results(self, results, filename="repository_analysis_results.csv"):
+    def save_results(self, results=None, filename=None):
+        """Salva resultados no arquivo CSV"""
+        if results is None:
+            results = self.results
+        if filename is None:
+            filename = self.results_file
+            
         if not results:
             print("Nenhum resultado para salvar")
             return
 
+        file_exists = os.path.exists(filename)
+        
+        existing_results = []
+        if file_exists:
+            try:
+                with open(filename, 'r', encoding='utf-8') as file:
+                    reader = csv.DictReader(file)
+                    existing_results = list(reader)
+                print(f"📂 Carregados {len(existing_results)} resultados existentes")
+            except Exception as e:
+                print(f"⚠️ Erro ao carregar resultados existentes: {e}")
+        
+        all_results = existing_results + results
+        
         with open(filename, "w", newline="", encoding="utf-8") as file:
-            writer = csv.DictWriter(file, fieldnames=results[0].keys())
-            writer.writeheader()
-            writer.writerows(results)
+            if all_results:
+                writer = csv.DictWriter(file, fieldnames=all_results[0].keys())
+                writer.writeheader()
+                writer.writerows(all_results)
 
-        print(f"✓ Resultados salvos em {filename}")
-        print(f"Total de repositórios analisados: {len(results)}")
+        print(f"💾 Resultados salvos em {filename}")
+        print(f"📊 Total de repositórios no arquivo: {len(all_results)}")
+        print(f"🆕 Novos resultados adicionados: {len(results)}")
+    
+    def save_incremental(self, new_result):
+        """Salva um novo resultado incrementalmente"""
+        existing_results = []
+        if os.path.exists(self.results_file):
+            try:
+                with open(self.results_file, 'r', encoding='utf-8') as file:
+                    reader = csv.DictReader(file)
+                    existing_results = list(reader)
+            except Exception as e:
+                print(f"⚠️ Erro ao carregar resultados existentes: {e}")
+        
+        all_results = existing_results + [new_result]
+        
+        with open(self.results_file, "w", newline="", encoding="utf-8") as file:
+            if all_results:
+                writer = csv.DictWriter(file, fieldnames=all_results[0].keys())
+                writer.writeheader()
+                writer.writerows(all_results)
+        
+        print(f"💾 Resultado incremental salvo: {new_result['full_name']}")
+        print(f"📊 Total no arquivo: {len(all_results)} repositórios")
 
-    def run_analysis(self, num_repos=1):
+    def run_analysis(self, num_repos=100, max_workers=3):
         print("=== Analisador de Repositórios Java com CK ===\n")
+        start_time = datetime.now()
 
         if not self.install_ck_tool():
             print("Não foi possível encontrar o ck.jar. Abortando.")
             return
 
-        repos = self.load_repositories()
-        if not repos:
+        repos_to_analyze = self.get_remaining_repositories(num_repos)
+        if not repos_to_analyze:
+            print("✅ Todos os repositórios já foram analisados!")
             return
 
-        repos_to_analyze = repos[:num_repos]
-        print(f"\nAnalisando {len(repos_to_analyze)} repositórios...")
+        print(f"\nAnalisando {len(repos_to_analyze)} repositórios restantes...")
+        print(f"Usando {max_workers} workers paralelos")
+        print(f"Início: {start_time.strftime('%H:%M:%S')}")
 
-        for i, repo_info in enumerate(repos_to_analyze, 1):
-            print(f"\n[{i}/{len(repos_to_analyze)}] Processando...")
+
+        results_lock = threading.Lock()
+        
+        def analyze_with_lock(repo_info, index):
             result = self.analyze_single_repository(repo_info)
             if result:
-                self.results.append(result)
-                print(f"✓ Repositório {i} analisado com sucesso")
-            else:
-                print(f"✗ Falha na análise do repositório {i}")
+                with results_lock:
+                    self.results.append(result)
+                    self.save_incremental(result)
+                return True, index, repo_info['full_name']
+            return False, index, repo_info['full_name']
 
-            if i < len(repos_to_analyze):
-                print("Aguardando 5 segundos...")
-                time.sleep(5)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+
+            future_to_repo = {
+                executor.submit(analyze_with_lock, repo_info, i): (i, repo_info)
+                for i, repo_info in enumerate(repos_to_analyze, 1)
+            }
+            
+            completed = 0
+            for future in concurrent.futures.as_completed(future_to_repo):
+                i, repo_info = future_to_repo[future]
+                completed += 1
+                
+                try:
+                    success, index, repo_name = future.result()
+                    if success:
+                        print(f"✓ [{completed}/{len(repos_to_analyze)}] {repo_name} analisado com sucesso")
+                    else:
+                        print(f"✗ [{completed}/{len(repos_to_analyze)}] Falha na análise de {repo_name}")
+                except Exception as e:
+                    print(f"✗ [{completed}/{len(repos_to_analyze)}] Erro inesperado em {repo_info['full_name']}: {e}")
+                
+
+                if completed % 5 == 0:
+                    elapsed = datetime.now() - start_time
+                    print(f"\n📊 Progresso: {completed}/{len(repos_to_analyze)} ({completed/len(repos_to_analyze)*100:.1f}%)")
+                    print(f"⏱️ Tempo decorrido: {elapsed}")
+                    if completed > 0:
+                        avg_time = elapsed / completed
+                        remaining = (len(repos_to_analyze) - completed) * avg_time
+                        print(f"⏳ Tempo estimado restante: {remaining}")
+                    print()
+
+        end_time = datetime.now()
+        total_time = end_time - start_time
+        print(f"\n🏁 Análise concluída em {total_time}")
 
         if self.results:
-            self.save_results(self.results)
             self.print_summary()
         else:
             print("Nenhum repositório foi analisado com sucesso.")
@@ -259,8 +406,56 @@ class RepositoryAnalyzer:
 
 def main():
     analyzer = RepositoryAnalyzer()
-    print("Executando análise (1 repositório)...")
-    analyzer.run_analysis(num_repos=3)
+    
+    print("🚀 ANALISADOR DE REPOSITÓRIOS JAVA COM CK")
+    print("=" * 50)
+    
+    all_repos = analyzer.load_repositories()
+    analyzed_repos = set()
+    if os.path.exists(analyzer.results_file):
+        try:
+            with open(analyzer.results_file, 'r', encoding='utf-8') as file:
+                reader = csv.DictReader(file)
+                analyzed_repos = {row['full_name'] for row in reader}
+        except Exception as e:
+            print(f"⚠️ Erro ao carregar resultados: {e}")
+    
+    total_repos = len(all_repos)
+    analyzed_count = len(analyzed_repos)
+    remaining_count = total_repos - analyzed_count
+    progress = (analyzed_count / total_repos) * 100
+    
+    print("📊 STATUS DA ANÁLISE:")
+    print(f"📋 Total de repositórios: {total_repos}")
+    print(f"✅ Já analisados: {analyzed_count}")
+    print(f"⏳ Restantes: {remaining_count}")
+    print(f"📈 Progresso: {progress:.1f}%")
+    
+    if remaining_count == 0:
+        print("🎉 Todos os repositórios já foram analisados!")
+        return
+    
+    remaining_repos = analyzer.get_remaining_repositories(10)
+    print(f"\n🎯 PRÓXIMOS 10 REPOSITÓRIOS:")
+    for i, repo in enumerate(remaining_repos, 1):
+        stars = repo.get('stars', 'N/A')
+        print(f"{i:2d}. {repo['full_name']} ({stars} ⭐)")
+    
+    print(f"\n🔄 Iniciando análise dos próximos 100 repositórios...")
+    print("💡 Dica: Você pode interromper (Ctrl+C) e retomar depois!")
+    print("💾 Cada resultado é salvo automaticamente no mesmo arquivo CSV")
+    
+    try:
+        analyzer.run_analysis(num_repos=100, max_workers=3)
+    except KeyboardInterrupt:
+        print("\n🛑 Análise interrompida pelo usuário")
+        print("💾 Resultados já salvos no arquivo CSV")
+    except Exception as e:
+        print(f"❌ Erro: {e}")
+    finally:
+        if analyzer.results:
+            print("\n" + "="*50)
+            analyzer.print_summary()
 
 if __name__ == "__main__":
     main()
