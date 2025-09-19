@@ -213,6 +213,29 @@ class RepositoryAnalyzer:
             print(f"✗ Erro ao processar resultados CK para {repo_path.name}: {e}")
             return None
 
+    def create_failure_metrics(self, repo_info, error_type="failure"):
+        """Cria métricas de falha para repositórios que não puderam ser analisados"""
+        return {
+            **repo_info,
+            "repository": repo_info["full_name"].replace("/", "_"),
+            "total_classes": 0,
+            "avg_cbo": 0,
+            "median_cbo": 0,
+            "std_cbo": 0,
+            "avg_dit": 0,
+            "median_dit": 0,
+            "std_dit": 0,
+            "avg_lcom": 0,
+            "median_lcom": 0,
+            "std_lcom": 0,
+            "total_loc": 0,
+            "avg_loc_per_class": 0,
+            "max_cbo": 0,
+            "max_dit": 0,
+            "max_lcom": 0,
+            "analysis_status": error_type
+        }
+
     def analyze_single_repository(self, repo_info):
         repo_name = repo_info["full_name"].replace("/", "_")
         repo_url = f"https://github.com/{repo_info['full_name']}.git"
@@ -223,30 +246,41 @@ class RepositoryAnalyzer:
         print(f"Idade: {repo_info['age_years']} anos")
         print(f"Releases: {repo_info['releases']}")
 
-        repo_path = self.clone_repository(repo_url, repo_name)
-        if not repo_path:
-            return None
+        try:
+            repo_path = self.clone_repository(repo_url, repo_name)
+            if not repo_path:
+                print(f"✗ Falha no clone de {repo_info['full_name']}")
+                return self.create_failure_metrics(repo_info, "clone_failed")
 
-        ck_metrics = self.analyze_repository_with_ck(repo_path)
-        if not ck_metrics:
-            shutil.rmtree(repo_path, onerror=self.handle_remove_readonly)
-            return None
+            ck_metrics = self.analyze_repository_with_ck(repo_path)
+            if not ck_metrics:
+                print(f"✗ Falha na análise CK de {repo_info['full_name']}")
+                # Limpar repositório se existir
+                if repo_path and repo_path.exists():
+                    shutil.rmtree(repo_path, onerror=self.handle_remove_readonly)
+                return self.create_failure_metrics(repo_info, "ck_analysis_failed")
 
-        combined_metrics = {**repo_info, **ck_metrics}
+            combined_metrics = {**repo_info, **ck_metrics}
+            combined_metrics["analysis_status"] = "success"
 
+            # Limpeza assíncrona
+            def cleanup_repo():
+                try:
+                    if repo_path and repo_path.exists():
+                        shutil.rmtree(repo_path, onerror=self.handle_remove_readonly)
+                        print(f"✓ Repositório {repo_name} removido após análise")
+                except Exception as e:
+                    print(f"⚠ Erro ao remover {repo_name}: {e}")
+            
+            cleanup_thread = threading.Thread(target=cleanup_repo)
+            cleanup_thread.daemon = True
+            cleanup_thread.start()
 
-        def cleanup_repo():
-            try:
-                shutil.rmtree(repo_path, onerror=self.handle_remove_readonly)
-                print(f"✓ Repositório {repo_name} removido após análise")
-            except Exception as e:
-                print(f"⚠ Erro ao remover {repo_name}: {e}")
-        
-        cleanup_thread = threading.Thread(target=cleanup_repo)
-        cleanup_thread.daemon = True
-        cleanup_thread.start()
+            return combined_metrics
 
-        return combined_metrics
+        except Exception as e:
+            print(f"✗ Erro inesperado em {repo_info['full_name']}: {e}")
+            return self.create_failure_metrics(repo_info, f"error: {str(e)[:50]}")
 
     def save_results(self, results=None, filename=None):
         """Salva resultados no arquivo CSV"""
@@ -294,11 +328,24 @@ class RepositoryAnalyzer:
             except Exception as e:
                 print(f"⚠️ Erro ao carregar resultados existentes: {e}")
         
+        # Garantir que todos os campos estejam presentes
         all_results = existing_results + [new_result]
+        
+        # Obter todos os campos únicos de todos os resultados
+        all_fieldnames = set()
+        for result in all_results:
+            all_fieldnames.update(result.keys())
+        all_fieldnames = sorted(list(all_fieldnames))
+        
+        # Garantir que todos os resultados tenham todos os campos
+        for result in all_results:
+            for field in all_fieldnames:
+                if field not in result:
+                    result[field] = ""  # Valor padrão para campos ausentes
         
         with open(self.results_file, "w", newline="", encoding="utf-8") as file:
             if all_results:
-                writer = csv.DictWriter(file, fieldnames=all_results[0].keys())
+                writer = csv.DictWriter(file, fieldnames=all_fieldnames)
                 writer.writeheader()
                 writer.writerows(all_results)
         
@@ -327,12 +374,24 @@ class RepositoryAnalyzer:
         
         def analyze_with_lock(repo_info, index):
             result = self.analyze_single_repository(repo_info)
+            # Sempre salvar o resultado, mesmo se for falha
             if result:
                 with results_lock:
                     self.results.append(result)
                     self.save_incremental(result)
-                return True, index, repo_info['full_name']
-            return False, index, repo_info['full_name']
+                
+                # Verificar se foi sucesso ou falha
+                if result.get("analysis_status") == "success":
+                    return True, index, repo_info['full_name']
+                else:
+                    return False, index, repo_info['full_name']
+            else:
+                # Se não retornou nada, criar métricas de falha
+                failure_result = self.create_failure_metrics(repo_info, "unknown_error")
+                with results_lock:
+                    self.results.append(failure_result)
+                    self.save_incremental(failure_result)
+                return False, index, repo_info['full_name']
 
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -383,26 +442,44 @@ class RepositoryAnalyzer:
         print("\n=== RESUMO DOS RESULTADOS ===")
 
         total_repos = len(self.results)
-        total_classes = sum(r["total_classes"] for r in self.results)
-        total_loc = sum(r["total_loc"] for r in self.results)
+        successful_repos = [r for r in self.results if r.get("analysis_status") == "success"]
+        failed_repos = [r for r in self.results if r.get("analysis_status") != "success"]
+        
+        print(f"Total de repositórios processados: {total_repos}")
+        print(f"✅ Sucessos: {len(successful_repos)}")
+        print(f"❌ Falhas: {len(failed_repos)}")
 
-        print(f"Repositórios analisados: {total_repos}")
-        print(f"Total de classes: {total_classes}")
-        print(f"Total de linhas de código: {total_loc:,}")
+        if successful_repos:
+            total_classes = sum(r["total_classes"] for r in successful_repos)
+            total_loc = sum(r["total_loc"] for r in successful_repos)
 
-        avg_cbo = sum(r["avg_cbo"] for r in self.results) / total_repos
-        avg_dit = sum(r["avg_dit"] for r in self.results) / total_repos
-        avg_lcom = sum(r["avg_lcom"] for r in self.results) / total_repos
+            print(f"\n📊 Métricas dos repositórios com sucesso:")
+            print(f"Total de classes: {total_classes}")
+            print(f"Total de linhas de código: {total_loc:,}")
 
-        print(f"\nMétricas de Qualidade Médias:")
-        print(f"CBO médio: {avg_cbo:.2f}")
-        print(f"DIT médio: {avg_dit:.2f}")
-        print(f"LCOM médio: {avg_lcom:.2f}")
+            avg_cbo = sum(r["avg_cbo"] for r in successful_repos) / len(successful_repos)
+            avg_dit = sum(r["avg_dit"] for r in successful_repos) / len(successful_repos)
+            avg_lcom = sum(r["avg_lcom"] for r in successful_repos) / len(successful_repos)
 
-        print(f"\nTop 3 repositórios por estrelas:")
-        sorted_repos = sorted(self.results, key=lambda x: int(x["stars"]), reverse=True)
-        for i, repo in enumerate(sorted_repos[:3], 1):
-            print(f"{i}. {repo['full_name']} - {repo['stars']} ⭐ (CBO: {repo['avg_cbo']:.2f})")
+            print(f"\nMétricas de Qualidade Médias:")
+            print(f"CBO médio: {avg_cbo:.2f}")
+            print(f"DIT médio: {avg_dit:.2f}")
+            print(f"LCOM médio: {avg_lcom:.2f}")
+
+            print(f"\nTop 3 repositórios por estrelas:")
+            sorted_repos = sorted(successful_repos, key=lambda x: int(x["stars"]), reverse=True)
+            for i, repo in enumerate(sorted_repos[:3], 1):
+                print(f"{i}. {repo['full_name']} - {repo['stars']} ⭐ (CBO: {repo['avg_cbo']:.2f})")
+
+        if failed_repos:
+            print(f"\n❌ Repositórios com falha:")
+            failure_types = {}
+            for repo in failed_repos:
+                status = repo.get("analysis_status", "unknown")
+                failure_types[status] = failure_types.get(status, 0) + 1
+            
+            for failure_type, count in failure_types.items():
+                print(f"  - {failure_type}: {count} repositórios")
 
 def main():
     analyzer = RepositoryAnalyzer()
@@ -446,7 +523,7 @@ def main():
     print("💾 Cada resultado é salvo automaticamente no mesmo arquivo CSV")
     
     try:
-        analyzer.run_analysis(num_repos=100, max_workers=3)
+        analyzer.run_analysis(num_repos=10, max_workers=3)
     except KeyboardInterrupt:
         print("\n🛑 Análise interrompida pelo usuário")
         print("💾 Resultados já salvos no arquivo CSV")
