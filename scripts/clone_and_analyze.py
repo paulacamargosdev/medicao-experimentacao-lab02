@@ -352,7 +352,7 @@ class RepositoryAnalyzer:
         print(f"💾 Resultado incremental salvo: {new_result['full_name']}")
         print(f"📊 Total no arquivo: {len(all_results)} repositórios")
 
-    def run_analysis(self, num_repos=100, max_workers=3):
+    def run_analysis(self, num_repos=1000, max_workers=3):
         print("=== Analisador de Repositórios Java com CK ===\n")
         start_time = datetime.now()
 

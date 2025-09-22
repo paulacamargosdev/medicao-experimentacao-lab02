@@ -1,109 +1,56 @@
-# Lab02S01 - Análise de Características de Qualidade de Sistemas Java
+# 📊 Análise de Características de Qualidade de Sistemas Java
 
-Este projeto tem como foco a análise de características de qualidade de sistemas Java através de métricas de código.
+Este projeto tem como foco a análise de características de qualidade de sistemas Java através de métricas de código usando a ferramenta [CK (Chidamber & Kemerer)](https://github.com/mauricioaniche/ck). A aplicação clona um repositório Java do GitHub, executa o CK Tool e exibe métricas por **classe**, **método**, **campo** e **variável**.
 
-## Objetivo
+---
 
-Analisar aspectos da qualidade de repositórios desenvolvidos na linguagem Java, correlacionando-os com características do processo de desenvolvimento, utilizando métricas de produto calculadas através da ferramenta CK.
+## 🧠 O que é CK?
 
-## Questões de Pesquisa
+**CK** significa *Chidamber & Kemerer* – os autores de um dos primeiros conjuntos de métricas orientadas a objetos. A ferramenta **CK** implementa e estende essas métricas para projetos Java. Ela analisa o código-fonte estático e gera arquivos `.csv` com as métricas detalhadas.
+
+---
+
+## 📈 Métricas extraídas e analisadas
+
+Esta tabela contém métricas de qualidade extraídas em nível de classe, sendo fundamentais para entender o **design estrutural** de um sistema. Para o laboratório atual, foram extraídas somente:
+
+
+| Coluna                   | Descrição                                                                 |
+|--------------------------|---------------------------------------------------------------------------|
+| file                     | Caminho do arquivo Java analisado.                                       |
+| class                    | Nome totalmente qualificado da classe.                                   |
+| type                     | Tipo da classe (ex: class, interface, enum).                             |
+| cbo                      | Coupling Between Objects — acoplamento entre objetos.                    |
+| dit                      | Depth of Inheritance Tree — profundidade na hierarquia de herança.       |
+| lcom                     | Lack of Cohesion of Methods — coesão entre métodos da classe.            |
+| loc                      | Lines of Code — linhas de código da classe.                              |
+
+Também foram coletadas métricas de processo, sendo elas:
+
+- **Popularidade**: Número de estrelas
+- **Atividade**: Número de *releases*
+- **Maturidade**: Idade (em anos) de cada repositório
+
+---
+
+## ❓ Questões de Pesquisa
 
 - **RQ 01**: Qual a relação entre a popularidade dos repositórios e as suas características de qualidade?
 - **RQ 02**: Qual a relação entre a maturidade dos repositórios e as suas características de qualidade?
 - **RQ 03**: Qual a relação entre a atividade dos repositórios e as suas características de qualidade?
 - **RQ 04**: Qual a relação entre o tamanho dos repositórios e as suas características de qualidade?
 
-## Métricas Analisadas
+### ❔RQ 01
 
-### Métricas de Processo
 
-- **Popularidade**: Número de estrelas
-- **Tamanho**: Linhas de código (LOC) e linhas de comentários
-- **Atividade**: Número de releases
-- **Maturidade**: Idade (em anos) de cada repositório
 
-### Métricas de Qualidade
+### ❔RQ 02
 
-- **CBO**: Coupling Between Objects
-- **DIT**: Depth of Inheritance Tree
-- **LCOM**: Lack of Cohesion of Methods
 
-## Arquivos do Projeto
 
-### Scripts Principais
+### ❔RQ 03
 
-1. **`collect_repositories.py`**
 
-   - Coleta os top 1000 repositórios Java mais populares do GitHub
-   - Utiliza a API REST do GitHub
-   - Salva resultados em CSV
 
-### Arquivos de Configuração
+### ❔RQ 04
 
-- **`requirements.txt`**: Dependências Python necessárias
-- **`README.md`**: Documentação do projeto
-
-## Instalação e Uso
-
-### Pré-requisitos
-
-- Python 3.7+
-- Git
-- Acesso à internet
-
-### Instalação
-
-1. Clone ou baixe os arquivos do projeto
-2. Instale as dependências:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-### Uso
-
-#### 1. Coletar Lista de Repositórios
-
-```bash
-python collect_repositories.py
-```
-
-Este script tem como objetivo:
-
-- Buscar os 1000 repositórios Java mais populares
-- Salvar a lista em `top_1000_java_repos.csv`
-
-#### 2. Analisar Repositório Individual
-
-```bash
-python analyze_single_repo.py
-```
-
-Este script irá:
-
-- Clonar o repositório Spring Boot
-- Executar análise com CK
-- Gerar CSV com métricas detalhadas
-
-#### 3. Automação Completa
-
-```bash
-python automation_script.py
-```
-
-Este script irá:
-
-- Carregar lista de repositórios
-- Clonar e analisar múltiplos repositórios
-- Gerar relatório consolidado
-
-## Estrutura de Saída
-
-### Arquivos CSV Gerados
-
-1. **`top_1000_java_repos.csv`**
-
-   - Lista completa dos repositórios coletados
-   - Contém informações básicas (estrelas, forks, tamanho, etc.)
-
-## Exemplo de Resultados
-//todo: fix
